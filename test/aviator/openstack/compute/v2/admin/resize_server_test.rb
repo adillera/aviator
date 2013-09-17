@@ -30,30 +30,12 @@ class Aviator::Test
 
     def session
       unless @session
-        environment = 'openstack_admin'
-        @session    = Aviator::Session.new(
-                        config_file: Environment.path,
-                        environment: environment
-                      )
+        @session = Aviator::Session.new(
+                     config_file: Environment.path,
+                     environment: 'openstack_admin'
+                   )
 
         @session.authenticate
-
-        creds = YAML.load_file(Environment.path).with_indifferent_access[environment]['auth_credentials']
-
-        tenants = @session.identity_service.request(:list_tenants).body['tenants']
-
-        tenants.each do |t|
-          @session.authenticate do |c|
-            c[:username]   = creds[:username]
-            c[:password]   = creds[:password]
-            c[:tenantName] = t['name']
-          end
-
-          has_servers = @session.compute_service.request(:list_servers).body['servers'].empty?
-
-          break unless has_servers
-        end
-
       end
 
       @session
@@ -61,7 +43,24 @@ class Aviator::Test
 
 
     def server
-      @server ||= session.compute_service.request(:list_servers){ |p| p[:details] = true }.body[:servers].find{ |s| !['ERROR', 'VERIFY_RESIZE', 'RESIZE'].include?(s['status']) }.with_indifferent_access
+      unless @server
+        response = session.compute_service.request(:list_servers) do |params|
+                     params[:details]     = true
+                     params[:all_tenants] = true
+                   end
+
+        current_tenant = get_session_data[:access][:token][:tenant]
+        active_servers = response.body[:servers].select do |server| 
+                           server[:status] == 'ACTIVE' && server[:tenant_id] == current_tenant[:id]
+                         end
+        
+        raise "\n\nProject '#{ current_tenant[:name] }' should have at least 1 server with "\
+              "a status of ACTIVE\n\n" if active_servers.empty?
+
+        @server = active_servers.first
+      end
+      
+      @server
     end
 
 

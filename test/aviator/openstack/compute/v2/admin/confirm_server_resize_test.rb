@@ -28,41 +28,39 @@ class Aviator::Test
 
     def session
       unless @session
-        environment = 'openstack_admin'
-        @session    = Aviator::Session.new(
-                        config_file: Environment.path,
-                        environment: environment
-                      )
+        @session = Aviator::Session.new(
+                     config_file: Environment.path,
+                     environment: 'openstack_admin'
+                   )
 
         @session.authenticate
-
-        creds = YAML.load_file(Environment.path).with_indifferent_access[environment]['auth_credentials']
-
-        tenants = @session.identity_service.request(:list_tenants).body['tenants']
-
-        tenants.each do |t|
-          @session.authenticate do |c|
-            c[:username]   = creds[:username]
-            c[:password]   = creds[:password]
-            c[:tenantName] = t['name']
-          end
-
-          servers = @session.compute_service.request(:list_servers){ |p| p[:details] = true }.body['servers']
-
-          unless servers.empty?
-            has_resized_server = servers.find{ |s| s['status'] == 'VERIFY_RESIZE' }
-            break if has_resized_server
-          end
-        end
-
       end
 
       @session
     end
 
 
+
     def server
-      @server ||= session.compute_service.request(:list_servers){ |p| p[:details] = true }.body[:servers].find{ |s| s['status'] == 'VERIFY_RESIZE' }.with_indifferent_access
+      unless @server
+        response = session.compute_service.request(:list_servers) do |params|
+                     params[:details]     = true
+                     params[:all_tenants] = true
+                   end
+
+        current_tenant = get_session_data[:access][:token][:tenant]
+
+        resized_servers = response.body[:servers].select do |server|
+                           server[:status] == 'VERIFY_RESIZE' && server[:tenant_id] == current_tenant[:id]
+                         end
+
+        raise "\n\nProject '#{ current_tenant[:name] }' should have at least 1 server with "\
+              "a status of VERIFY_RESIZE\n\n" if resized_servers.empty?
+
+        @server = resized_servers.first
+      end
+
+      @server
     end
 
 
@@ -123,7 +121,7 @@ class Aviator::Test
 
     validate_response 'parameters are provided' do
       response = session.compute_service.request :confirm_server_resize do |params|
-        params[:id]        = server[:id]
+        params[:id] = server[:id]
       end
 
       response.status.must_equal 204
@@ -133,7 +131,7 @@ class Aviator::Test
 
     validate_response 'the id parameter is invalid' do
       response = session.compute_service.request :confirm_server_resize do |params|
-        params[:id]        = 'invalidvalue'
+        params[:id] = 'invalidvalue'
       end
 
       response.status.must_equal 404
